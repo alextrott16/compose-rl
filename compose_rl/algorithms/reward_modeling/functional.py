@@ -639,3 +639,123 @@ class JudgementScoreVerifierReward(BaseVerifierReward):
         target = 1.0 if target else 0.0
         generated_score = self._safe_sigmoid(generated_score)
         return 1.0 - (generated_score - target) ** 2
+    
+# Helper class for reward to follow
+class DigitEntropyScorer:
+    """
+    A class to score sequences of digits based on their likelihood given previous digits.
+    
+    This class uses a recursive dictionary structure to store digit frequencies at each position
+    after the decimal point. It allows for efficient scoring of sequences by calculating the
+    unlikelihood (?? 1 - likelihood) of each digit given the previous digits.
+    
+    This is a way to reward precise sequences while promoting diversity in the sequences.
+    """
+    def __init__(self, depth: int=8):
+        self.depth = depth
+        self.count = 0
+        self.children: dict[str, DigitEntropyScorer] = {}
+        
+        weights = 0.8 ** (np.arange(self.depth) + 1)  # Exponential decay for each position
+        self.weights = weights/weights.sum()
+
+    def _add(self, digits: str, pos: int=0):
+        """
+        Add a sequence of digits (as a string) to the dictionary, updating counts recursively.
+        """
+        self.count += 1
+        if pos < len(digits) and pos < self.depth:
+            digit = digits[pos]
+            if digit not in self.children:
+                self.children[digit] = DigitEntropyScorer(self.depth)
+            self.children[digit]._add(digits, pos + 1)
+
+    def _get_freq(self, digits: str, pos: int=0):
+        """
+        Get the frequency of the digit at position pos given the previous digits.
+        Returns the probability of the digit at pos, given the prefix digits[:pos].
+        """
+        if pos == len(digits) or pos == self.depth or self.count == 0:
+            return 0.0
+        digit = digits[pos]
+        if digit in self.children:
+            return self.children[digit].count / (1e-10 + self.count)
+        else:
+            return 0.0
+        
+    def _get_frequencies(self, digits: str):
+        """
+        Get the conditional frequencies of the digits in the sequence
+        """
+        frequencies = []
+        node = self
+        for pos, digit in enumerate(digits[:self.depth]):
+            if node.count == 0:
+                frequencies.append(0.0)
+            else:
+                freq = node._get_freq(digits, pos)
+                frequencies.append(freq)
+            node = node.children.get(digit, DigitEntropyScorer(self.depth))
+        return np.array(frequencies)
+
+    def _get_score(self, digits: str):
+        """
+        For a sequence of digits, sum the unlikelihood for each digit position.
+        """
+        scores = 1 - self._get_frequencies(digits)
+        return np.sum(scores * self.weights[:len(scores)])  # Apply weights to the scores
+    
+    def score(self, number: float) -> float:
+        """
+        Get the score for a number based on its digits.
+        """
+        digits = str(number).split('.')[-1]
+        return self._get_score(digits)
+    
+    def add_and_score(self, number: float) -> float:
+        """
+        Add a number to the dictionary and return the score for its digits.
+        """
+        digits = str(number).split('.')[-1]
+        score = self._get_score(digits)
+        self._add(digits)
+        return score
+    
+class JudgmentLogitDiversityReward(BaseVerifierReward):
+    """
+    A reward that encourages diversity in generated sequences by scoring based on the
+    unlikelihood of digits given previous digits.
+    
+    Args:
+        tokenizer (Tokenizer): The tokenizer to use for the reward.
+        depth (int): The depth of the digit sequence to consider for scoring.
+        reward (float): The base reward value to apply.
+    """
+    
+    BLOCKING = False
+
+    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0):
+        super().__init__(tokenizer=tokenizer, reward=reward)
+        self.scorer = DigitEntropyScorer(depth=8)
+    
+    def needs_extraction(self):
+        return True
+    
+    def extract_solution(self, text: str) -> float | None:
+        """Extract the score from text, if possible and valid."""
+        judgement_obj: Judgement | None = extract_and_build_pydantic_object(text, Judgement)
+        if judgement_obj is None:
+            return None
+        return judgement_obj.score
+    
+    def score_generations(self, answer: float | None, label: bool | int) -> float:
+        del label # unused
+        if answer is None:
+            # we likely could not extract a score from the response. so fail.
+            return 0.0
+        if not np.isfinite(answer):
+            # if the answer is NaN, our reward would be NaN (bad), so let's avoid this, shall we?
+            # seems smart to avoid infinite values as well
+            return 0.0
+        return self.reward * self.scorer.add_and_score(float(answer))
+        
