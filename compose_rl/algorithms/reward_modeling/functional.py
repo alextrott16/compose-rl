@@ -15,7 +15,7 @@ import torch
 
 log = logging.getLogger(__name__)
 
-from compose_rl.algorithms.reward_modeling.base_reward import Reward, Tokenizer
+from compose_rl.algorithms.reward_modeling.base_reward import Reward, RewardModel, Tokenizer
 from compose_rl.utils.rlvr_utils import (
     is_equiv,
     last_boxed_only_string,
@@ -730,7 +730,10 @@ class DigitEntropyScorer:
         self._add(digits)
         return score
     
-class JudgmentLogitDiversityReward(BaseVerifierReward):
+# Note: We need to implement this as a subclass of RewardModel to prevent it from
+# being run async. This simply has to do with the fact that the async implementation
+# will prevent the state from persisting, which is needed for the DigitEntropyScorer.
+class JudgmentLogitDiversityReward(RewardModel):
     """
     A reward that encourages diversity in generated sequences by scoring based on the
     unlikelihood of digits given previous digits.
@@ -744,27 +747,44 @@ class JudgmentLogitDiversityReward(BaseVerifierReward):
     BLOCKING = False
 
     def __init__(self, tokenizer: Tokenizer, reward: float = 1.0):
-        super().__init__(tokenizer=tokenizer, reward=reward)
+        super().__init__(tokenizer=tokenizer)
+        self.reward = reward
         self.scorer = DigitEntropyScorer(depth=8)
     
-    def needs_extraction(self):
-        return True
+    def __call__(
+        self,
+        batch: MutableMapping,
+    ) -> torch.FloatTensor:
+        try:
+            assert 'zero_rewards' in batch.keys()
+            assert 'raw_untokenized_texts' in batch.keys()
+            assert 'generated_lens' in batch.keys()
+        except AssertionError as e:
+            log.error(f'Missing key in reward batch. Batch keys: {batch.keys()}. Error: {e}')
+            raise e
+        
+        rewards = batch['zero_rewards']
+        raw_untokenized_texts = batch['raw_untokenized_texts']
+        generated_lens = batch['generated_lens']
+
+        batch_size = rewards.shape[0]
+        all_generated_texts = [x[1] for x in raw_untokenized_texts]
+        for i in range(batch_size):
+            rewards[i, generated_lens[i] - 1] += self._compute_reward(all_generated_texts[i])
+        print(f'JudgmentLogitDiversityReward count: {self.scorer.count}')
+        return rewards
     
-    def extract_solution(self, text: str) -> float | None:
+    def _compute_reward(self, text: str) -> float:
         """Extract the score from text, if possible and valid."""
         judgement_obj: Judgement | None = extract_and_build_pydantic_object(text, Judgement)
         if judgement_obj is None:
-            return None
-        return judgement_obj.score
-    
-    def score_generations(self, answer: float | None, label: bool | int) -> float:
-        del label # unused
-        if answer is None:
-            # we likely could not extract a score from the response. so fail.
+            # We could not extract a score from the response. so fail.
             return 0.0
-        if not np.isfinite(answer):
-            # if the answer is NaN, our reward would be NaN (bad), so let's avoid this, shall we?
+        score = judgement_obj.score
+        
+        if not np.isfinite(score):
+            # If the answer is NaN, our reward would be NaN (bad), so let's avoid this, shall we?
             # seems smart to avoid infinite values as well
             return 0.0
-        return self.reward * self.scorer.add_and_score(float(answer))
+        return self.reward * self.scorer.add_and_score(float(score))
         
