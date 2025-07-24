@@ -137,24 +137,18 @@ class RewardManager:
                     self.inference_rewards.append(reward_name)
 
                 else:
-                    model = build_reward(
-                        name=reward_type,
-                        tokenizer=self.tokenizer,
-                        kwargs=reward_config,
+                    reward_model_config = reward_config.get(
+                        'model_config',
+                        None,
+                    )
+                    assert reward_model_config is not None, 'model_config must be provided in reward_config'
+                    model = self.initialize_composer_model(
+                        model_config=reward_config.get('model_config'),
+                        model_name=reward_name,
+                        precision=reward_config.get('precision', precision),
+                        load_path=reward_config.get('load_path', None),
                     )
                     self.local_reward_models.append(reward_name)
-                    # reward_model_config = reward_config.get(
-                    #     'model_config',
-                    #     None,
-                    # )
-                    # assert reward_model_config is not None, 'model_config must be provided in reward_config'
-                    # model = self.initialize_composer_model(
-                    #     model_config=reward_config.get('model_config'),
-                    #     model_name=reward_name,
-                    #     precision=reward_config.get('precision', precision),
-                    #     load_path=reward_config.get('load_path', None),
-                    # )
-                    # self.local_reward_models.append(reward_name)
             else:
                 raise TypeError(
                     f'Reward class {reward_cls} is not a subclass of either Reward or RewardModel.',
@@ -169,12 +163,12 @@ class RewardManager:
         self.granularity_types = list(set(self.granularities.values()))
 
         self.pool = None
-        if self.inference_rewards or self.functional_rewards:
-            self.pool = Pool(
-                processes=len(self.inference_rewards) +
-                len(self.functional_rewards),
-                context=get_context('spawn'),
-            )
+        # if self.inference_rewards or self.functional_rewards:
+        #     self.pool = Pool(
+        #         processes=len(self.inference_rewards) +
+        #         len(self.functional_rewards),
+        #         context=get_context('spawn'),
+        #     )
 
         if not self.kl_penalty_in_reward:
             log.info(
@@ -415,11 +409,15 @@ class RewardManager:
                         self._to_cpu(curr_batch),
                     )
 
-                assert self.pool is not None
-                computed_rewards[reward_name] = self.pool.apply_async(
-                    func=func,
-                    args=args,
-                )
+                ##### Skip async reward stuff #####
+                # assert self.pool is not None
+                # computed_rewards[reward_name] = self.pool.apply_async(
+                #     func=func,
+                #     args=args,
+                # )
+                computed_rewards[reward_name] = func(*args)
+                ##### Skip async reward stuff #####
+                
             elif isinstance(curr_reward, RewardModel):
                 computed_rewards[reward_name] = self.call_reward_model(
                     self.all_rewards[reward_name],

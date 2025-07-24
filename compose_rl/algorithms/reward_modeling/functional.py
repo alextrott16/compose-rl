@@ -730,10 +730,10 @@ class DigitEntropyScorer:
         self._add(digits)
         return score
     
-# Note: We need to implement this as a subclass of RewardModel to prevent it from
-# being run async. This simply has to do with the fact that the async implementation
-# will prevent the state from persisting, which is needed for the DigitEntropyScorer.
-class JudgmentLogitDiversityReward(RewardModel):
+# Note: We need to hack the reward manager if we want to use this reward.
+# Specifically, we need to prevent the reward manager from trying to do async calls
+# because it prevents this class from maintaining its internal state.
+class JudgmentLogitDiversityReward(Reward):
     """
     A reward that encourages diversity in generated sequences by scoring based on the
     unlikelihood of digits given previous digits.
