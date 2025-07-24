@@ -142,6 +142,7 @@ class RewardManager:
                         tokenizer=self.tokenizer,
                         kwargs=reward_config,
                     )
+                    self.local_reward_models.append(reward_name)
                     # reward_model_config = reward_config.get(
                     #     'model_config',
                     #     None,
