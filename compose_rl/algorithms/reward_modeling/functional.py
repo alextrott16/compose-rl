@@ -574,8 +574,9 @@ class JudgementFormatVerifierReward(PydanticFormatVerifierReward):
 
 class JudgementScoreVerifierReward(BaseVerifierReward):
 
-    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0):
+    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0, score_is_probability: bool = False):
         super().__init__(tokenizer=tokenizer, reward=reward)
+        self.score_is_probability = score_is_probability
 
     def needs_extraction(self) -> bool:
         """Indicate that this verifier needs extraction."""
@@ -629,7 +630,8 @@ class JudgementScoreVerifierReward(BaseVerifierReward):
         is from the target, the more downscaled the reward will be.
 
         Args:
-            generated_score (float): The logit of the generated response.
+            generated_score (float): The logit of the generated response. Or, if the flag
+                `score_is_probability` is set to True, the probability.
             target (bool): The boolean class of the ground truth response. (Yes or No)
 
         Returns:
@@ -637,8 +639,15 @@ class JudgementScoreVerifierReward(BaseVerifierReward):
         """
         assert isinstance(target, bool), f'Target must be a boolean, got {type(target)}'
         target = 1.0 if target else 0.0
-        generated_score = self._safe_sigmoid(generated_score)
-        return 1.0 - (generated_score - target) ** 2
+        if not self.score_is_probability:
+            generated_probability = self._safe_sigmoid(generated_score)
+        else:
+            generated_probability = generated_score
+        if not (0.0 <= generated_probability <= 1.0):
+            # If the generated probability is not in [0, 1], we cannot compute a valid reward.
+            # This is effectively treated as a formatting failure (0 reward).
+            return 0.0
+        return 1.0 - (generated_probability - target) ** 2
     
 # Helper class for reward to follow
 class DigitEntropyScorer:
