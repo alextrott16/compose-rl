@@ -137,18 +137,23 @@ class RewardManager:
                     self.inference_rewards.append(reward_name)
 
                 else:
-                    reward_model_config = reward_config.get(
-                        'model_config',
-                        None,
+                    model = build_reward(
+                        name=reward_type,
+                        tokenizer=self.tokenizer,
+                        kwargs=reward_config,
                     )
-                    assert reward_model_config is not None, 'model_config must be provided in reward_config'
-                    model = self.initialize_composer_model(
-                        model_config=reward_config.get('model_config'),
-                        model_name=reward_name,
-                        precision=reward_config.get('precision', precision),
-                        load_path=reward_config.get('load_path', None),
-                    )
-                    self.local_reward_models.append(reward_name)
+                    # reward_model_config = reward_config.get(
+                    #     'model_config',
+                    #     None,
+                    # )
+                    # assert reward_model_config is not None, 'model_config must be provided in reward_config'
+                    # model = self.initialize_composer_model(
+                    #     model_config=reward_config.get('model_config'),
+                    #     model_name=reward_name,
+                    #     precision=reward_config.get('precision', precision),
+                    #     load_path=reward_config.get('load_path', None),
+                    # )
+                    # self.local_reward_models.append(reward_name)
             else:
                 raise TypeError(
                     f'Reward class {reward_cls} is not a subclass of either Reward or RewardModel.',
