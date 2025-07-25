@@ -660,13 +660,27 @@ class DigitEntropyScorer:
     
     This is a way to reward precise sequences while promoting diversity in the sequences.
     """
-    def __init__(self, depth: int=8):
+    def __init__(self, depth: int=8, gamma: float=1.0):
         self.depth = depth
+        self.gamma = gamma
+        if not (0 < self.gamma <= 1):
+            raise ValueError(f'Gamma must be in (0, 1], got {self.gamma}')
         self.count = 0
         self.children: dict[str, DigitEntropyScorer] = {}
         
         weights = 0.8 ** (np.arange(self.depth) + 1)  # Exponential decay for each position
         self.weights = weights/weights.sum()
+        
+    def _decay(self):
+        """
+        Decay the counts of all children by gamma.
+        This is used to keep the probabilities up-to-date as new sequences are added.
+        """
+        if self.gamma == 1.0:
+            return
+        self.count *= self.gamma
+        for child in self.children.values():
+            child._decay()
 
     def _add(self, digits: str, pos: int=0):
         """
@@ -676,7 +690,7 @@ class DigitEntropyScorer:
         if pos < len(digits) and pos < self.depth:
             digit = digits[pos]
             if digit not in self.children:
-                self.children[digit] = DigitEntropyScorer(self.depth)
+                self.children[digit] = DigitEntropyScorer(self.depth, self.gamma)
             self.children[digit]._add(digits, pos + 1)
 
     def _get_freq(self, digits: str, pos: int=0):
@@ -704,7 +718,7 @@ class DigitEntropyScorer:
             else:
                 freq = node._get_freq(digits, pos)
                 frequencies.append(freq)
-            node = node.children.get(digit, DigitEntropyScorer(self.depth))
+            node = node.children.get(digit, DigitEntropyScorer(self.depth, self.gamma))
         return np.array(frequencies)
 
     def _get_score(self, digits: str):
@@ -725,6 +739,7 @@ class DigitEntropyScorer:
         """
         Add a number to the dictionary and return the score for its digits.
         """
+        self._decay()  # Decay counts before adding new number
         digits = str(number).split('.')[-1]
         score = self._get_score(digits)
         self._add(digits)
@@ -740,16 +755,18 @@ class JudgmentLogitDiversityReward(Reward):
     
     Args:
         tokenizer (Tokenizer): The tokenizer to use for the reward.
-        depth (int): The depth of the digit sequence to consider for scoring.
         reward (float): The base reward value to apply.
+        depth (int): The depth of the digit sequence to consider for scoring.
+        gamma (float): The decay factor for the digit frequency counts.
+            Should be in the range (0, 1]. Defaults to 1.0.
     """
     
     BLOCKING = False
 
-    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0):
+    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0, depth: int=8, gamma: float=1.0):
         super().__init__(tokenizer=tokenizer)
         self.reward = reward
-        self.scorer = DigitEntropyScorer(depth=8)
+        self.scorer = DigitEntropyScorer(depth=depth, gamma=gamma)
     
     def __call__(
         self,
