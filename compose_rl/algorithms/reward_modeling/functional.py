@@ -7,7 +7,7 @@ import logging
 import re
 from abc import abstractmethod
 import math
-from typing import MutableMapping
+from typing import MutableMapping, Literal
 
 from pydantic import BaseModel
 import numpy as np
@@ -15,7 +15,7 @@ import torch
 
 log = logging.getLogger(__name__)
 
-from compose_rl.algorithms.reward_modeling.base_reward import Reward, RewardModel, Tokenizer
+from compose_rl.algorithms.reward_modeling.base_reward import Reward, Tokenizer
 from compose_rl.utils.rlvr_utils import (
     is_equiv,
     last_boxed_only_string,
@@ -554,8 +554,12 @@ class PydanticFormatVerifierReward(BaseVerifierReward):
         return self.reward
     
 class Judgement(BaseModel):
-        rationale: str
-        score: float
+    rationale: str
+    score: float
+    
+class JudgementClassification(BaseModel):
+    rationale: str
+    result: Literal["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T"]
 
 class JudgementFormatVerifierReward(PydanticFormatVerifierReward):
     """
@@ -574,9 +578,23 @@ class JudgementFormatVerifierReward(PydanticFormatVerifierReward):
 
 class JudgementScoreVerifierReward(BaseVerifierReward):
 
-    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0, score_is_probability: bool = False):
+    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0, score_is_probability: bool = False, class_mode: bool = False):
         super().__init__(tokenizer=tokenizer, reward=reward)
         self.score_is_probability = score_is_probability
+        self.class_mode = class_mode
+        if self.score_is_probability and self.class_mode:
+            raise ValueError(
+                'Cannot use score_is_probability with class_model. ' +
+                'Use one or the other.',
+            )
+        # Used in class mode
+        self._logit_map = {
+            k: float(v)
+            for k, v in zip(
+                'ABCDEFGHIJKLMNOPQRST',
+                np.linspace(-7.0, 7.0, 20),
+            )
+        }
 
     def needs_extraction(self) -> bool:
         """Indicate that this verifier needs extraction."""
@@ -584,9 +602,11 @@ class JudgementScoreVerifierReward(BaseVerifierReward):
     
     def extract_solution(self, text: str) -> float | None:
         """Extract the score from text, if possible and valid."""
-        judgement_obj = extract_and_build_pydantic_object(text, Judgement)
+        judgement_obj = extract_and_build_pydantic_object(text, Judgement if not self.class_mode else JudgementClassification)
         if judgement_obj is None:
             return None
+        if self.class_mode:
+            return self._logit_map.get(judgement_obj.result, None)
         return judgement_obj.score
     
     def score_generations(self, answer: float | None, label: bool | int) -> float:
