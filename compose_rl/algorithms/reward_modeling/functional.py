@@ -825,3 +825,292 @@ class JudgmentLogitDiversityReward(Reward):
             return 0.0
         return self.reward * self.scorer.add_and_score(float(score))
         
+
+# Example system prompt for the JudgmentOmniReward class (see class below for details):
+"""You will be asked to perform a judgment resulting in a yes/no decision.
+
+The message to follow will provide content to be judged and instructions on what aspects to consider in your judgment.
+
+Those instructions will call for a JSON output with a "rationale" and "result" field.
+Instead of following those instructions specifically, you should change 2 aspects.
+1. You must begin all your responses with a private thinking section wrapped in <thinking> xml tags.
+2. Instead of answering "yes" or "no" in the "result" field, you should output a floating-point score indicating your confidence level in the judgment. This will be interpreted as a classification logit, so 0.0 means totally uncertain, negative values mean "no" and positive values mean "yes". More extreme values indicate more confidence in your assessment.
+
+Importantly, your <thinking> must systematically derive the score you output. You must do this by structuring your thinking as follows:
+1. Identify at least 3 possible reasons why the score might be yes. For each such reason, assign a POSITIVE score indicating the marginal contribution of that reason to the overall score. Place each positive reason+score in a <pro> tag.
+2. Identify at least 3 negative reasons why the score might be no, but assign a NEGATIVE score indicating the marginal contribution of that reason to the overall score. Place each negative reason+score in a <con> tag.
+3. All marginal scores should be precise -- report at least 4 decimal places.
+4. The final score you output should be the sum of all the marginal scores. Note that you should be summing at least 6 scores!
+
+Notes on the <thinking> formatting rules:
+- You are encouraged to think out loud in whatever order you like. You can adjudicate the pros and cons in any order, and you can even change your mind as you go.
+- Every time you want to increment or decrement the score, open a <pro> or <con> tag, respectively, and then close it when you are done with that reason.
+- You must nest a <score> section inside each <pro> or <con> tag, and this must contain a single floating-point number with at least 4 decimal places. This is the marginal score for that reason.
+- <score> values must be positive within <pro> tags and negative within <con> tags.
+- The thinking section will be considered incomplete if there are any fewer than 3 <pro> tags and 3 <con> tags. But you should use even more than that if you can!!!
+- Because this formatting can be verified, your response will be considered a failure if you do not adhere.
+
+To clarify, here are 2 examples of valid <thinking> structures:
+<thinking> # just an example
+[A long, detailed thought process that considers multiple aspects of the judgment, including potential uncertainties and complexities in the situation.]
+Aspect X
+<pro>[A reason why the score might be yes]<score>[the marginal (positive) score associated with this reason]</score></pro>
+<con>[A reason why the score might be no]<score>[the marginal (negative) score associated with this reason]</score></con>
+Aspect Y
+[similar pattern to above, but for a different aspect]
+Aspect Z
+[similar pattern to above, but for a third aspect]
+Additional considerations
+<pro>...</pro>
+<pro>...</pro>
+<con>[An additional point that requires us to reconsider a previous pro and change the running score]</con>
+
+Score tallying
+[quick arithmetic to sum the marginal scores and arrive at a final score]
+</thinking>
+
+<thinking> # another example
+<pro>[A reason why the score might be yes]<score>[the marginal (positive) score associated with this reason]</score></pro>
+<pro>...</pro>
+<pro>...</pro>
+<pro>...</pro>
+<pro>...</pro>
+<pro>...</pro> 
+<con>[A reason why the score might be no]<score>[the marginal (negative) score associated with this reason]</score></con>
+<con>...</con>
+<con>...</con>
+
+Score tallying
+[quick arithmetic to sum the marginal scores and arrive at a final score]
+</thinking>
+
+Let's summarize!
+You should partially disregard the formatting instructions in the message to follow, and ensure that your output looks like this:
+
+<thinking>
+[Think out loud here -- be rigorous and thorough! Follow the structure directions above, and be sure to assign scores to each reason you identify. Your final score should be the sum of all the marginal scores.]
+</thinking>
+{
+    "rationale": "Summarise your judgment here, and account for uncertainity",
+    "score": [float] # a floating-point score indicating your confidence level in the judgment, where negative values mean "no" and positive values mean "yes"; this must be the sum of the marginal scores articulated in your <thinking>
+}
+
+Hint: the score is actually a classification logit (meaning `sigmoid(logit) --> probability("yes")`), so an absolute value of >=7 indicates ~maximal~ confidence.
+"""
+
+def validate_thinking_structure(generation: str) -> bool:
+    """
+    Validate that the <thinking> section of the generation follows the expected structure.
+    It should contain at least 3 <pro> tags and 3 <con> tags, each with a <score> tag inside.
+    The <score> tags should contain a floating-point number which must be finite and
+    positive/negative depending on whether it's a pro or con.
+    """
+    # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
+    thinking_dict = xml_string_to_dict(generation)
+    if 'thinking' not in thinking_dict:
+        return False
+    thinking_content = thinking_dict['thinking']
+    if not isinstance(thinking_content, dict):
+        return False  # Thinking content should be a dictionary
+    if 'pro' not in thinking_content or 'con' not in thinking_content:
+        return False
+    pro = thinking_content['pro']
+    con = thinking_content['con']
+    if not isinstance(pro, list) or not isinstance(con, list):
+        return False  # pro and con should be lists of dictionaries
+    if len(pro) < 3 or len(con) < 3:
+        return False
+    # Check that each pro and con has a score
+    def validate_pro_con(content: str | dict, is_pro: bool) -> bool:
+        if not isinstance(content, dict):
+            return False
+        if 'score' not in content:
+            return False
+        try:
+            score = float(content['score'])
+        except (ValueError, TypeError):
+            return False
+        if not np.isfinite(score):
+            return False
+        if (is_pro and score <= 0) or (not is_pro and score >= 0):
+            return False
+        return True
+    for p in pro:
+        if not validate_pro_con(p, is_pro=True):
+            return False
+    for c in con:
+        if not validate_pro_con(c, is_pro=False):
+            return False
+    return True
+
+def extract_total_score(generation: str) -> float:
+    """
+    Extract the total score from the generation's <thinking> section.
+    This assumes that `validate_thinking_structure` has already been called and passed.
+    """
+    # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
+    thinking_dict = xml_string_to_dict(generation)
+    score = 0.0
+    for pro in thinking_dict['thinking']['pro']:
+        score += float(pro['score'])
+    for con in thinking_dict['thinking']['con']:
+        score += float(con['score'])
+    return score
+    
+class JudgmentOmniReward(BaseVerifierReward):
+    """A single reward for handling the thinking and scoring side of judging.
+    
+    Note: This enforces some formatting rules, which match a system prompt for this task.
+      An example of such a system prompt can be found in the comments above the source code
+      for this class.
+      
+    The formatting rules are:
+    - The response must start with a <thinking> section.
+    - The <thinking> section must contain at least 3 <pro> tags and 3 <con> tags.
+    - Each <pro> tag must contain a <score> tag with a positive floating-point number.
+    - Each <con> tag must contain a <score> tag with a negative floating-point number.
+    
+    In addition, the final JSON output must contain a "rationale" field and a "score" field.
+    And the "score" value must be the sum of all the scores in the <thinking> section.
+    
+    The reward structure is:
+    - If the generation does not follow the formatting rules, the reward is 0.0.
+    - Passing the formatting rules adds 0.1 to the reward.
+    - From there, add to the reward: 0.9 * (1 - the MSE between `sigmoid(score)` and the target label). _
+    """
+    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0):
+        super().__init__(tokenizer=tokenizer, reward=reward)
+
+    def needs_extraction(self) -> bool:
+        """Indicate that this verifier needs extraction."""
+        return False
+    
+    def score_generations(self, answer: str, label: bool | int) -> float:
+        """
+        Rewards the model for generating a valid response with a score that is 
+        similar to the ground truth score.
+
+        Args:
+            answer (str): The text produced by the model.
+            label (bool): The boolean class of the ground truth response. (Yes or No)
+        
+        Returns:
+            float: The reward value. A value between [0, self.reward]]
+        """
+        # First, validate the thinking structure
+        if not validate_thinking_structure(answer):
+            # If the thinking structure is invalid, we return 0.0 reward
+            return 0.0
+        # If the thinking structure is valid, we can extract the score
+        thinking_score = extract_total_score(answer)
+        if not np.isfinite(thinking_score):
+            # If the score is NaN, our reward would be NaN (bad), so let's avoid this, shall we?
+            # seems smart to avoid infinite values as well
+            return 0.0
+        
+        # Now let's parse the JSON output
+        judgement_obj = extract_and_build_pydantic_object(answer, Judgement)
+        if judgement_obj is None:
+            # We could not extract a score from the response. so fail.
+            return 0.0
+        # Our final formatting check:
+        if np.abs(judgement_obj.score - thinking_score) > 1e-4:
+            return 0.0
+        
+        base_reward = 0.1  # Base reward for passing the formatting rules
+        
+        # if the target is an integer, we need to convert it to a boolean
+        if isinstance(label, int) and label in [0, 1]:
+            label = bool(label)
+        mse_reward = 0.9 * self._mse_reward(judgement_obj.score, label)
+        
+        reward = base_reward + mse_reward
+        
+        return self.reward * reward
+    
+    def _safe_sigmoid(self, x, clip_min=-250, clip_max=250):
+        if x > clip_max:
+            return 1.0
+        if x < clip_min:
+            return 0.0
+        return 1.0 / (1.0 + np.exp(-x))
+
+    def _mse_reward(self, generated_score: float, target: bool) -> float:
+        """
+        Returns 1 minus the squared error between the generated probability and the target.
+
+        This is then used to scale the reward output. The further generated_score
+        is from the target, the more downscaled the reward will be.
+
+        Args:
+            generated_score (float): The logit of the generated response. Or, if the flag
+                `score_is_probability` is set to True, the probability.
+            target (bool): The boolean class of the ground truth response. (Yes or No)
+
+        Returns:
+            float: [0, 1]
+        """
+        assert isinstance(target, bool), f'Target must be a boolean, got {type(target)}'
+        target = 1.0 if target else 0.0
+        generated_probability = self._safe_sigmoid(generated_score)
+        if not (0.0 <= generated_probability <= 1.0):
+            # If the generated probability is not in [0, 1], we cannot compute a valid reward.
+            # This is effectively treated as a formatting failure (0 reward).
+            return 0.0
+        return 1.0 - (generated_probability - target) ** 2
+    
+# Helper for parsing XML strings into dictionaries
+def xml_string_to_dict(xml_string: str, allow_multiple: bool = True) -> dict:
+    """
+    Recursively parses an XML string into a dictionary.
+
+    Args:
+        xml_string (str): The XML string to parse.
+        allow_multiple (bool, optional): Whether to allow multiple values for the same tag. Defaults to True. 
+          If this is false, and there are multiple tags with the same name, an error will be raised.
+    Returns:
+        dict: A dictionary representing the parsed XML.
+    """
+    # Regular expression pattern to match XML tags
+    pattern = r'<(.*?)>(.*?)</\1>'
+    
+    # Find all matches of the pattern in the XML string
+    matches = re.findall(pattern, xml_string, flags=re.IGNORECASE | re.DOTALL)
+    
+    # Initialize an empty dictionary to store the results
+    result: dict[str, str | list[str | dict]] = {}
+    
+    # Iterate over the matches
+    for match in matches:
+        # The first element of the match is the tag name
+        tag_name = match[0]
+        
+        # The second element of the match is the tag contents
+        tag_contents = match[1]
+        
+        # If the tag contents contain XML tags, recursively parse them
+        submatch = re.findall(pattern, tag_contents, flags=re.IGNORECASE | re.DOTALL)
+        # Check if there are nested XML tags
+        if submatch:
+            # Recursively parse nested XML
+            value = xml_string_to_dict(tag_contents, allow_multiple)
+        else:
+            # If no nested tags, just use the stripped content
+            value = tag_contents.strip()
+        
+        # Check if the tag name already exists in the result dictionary
+        if tag_name in result:
+            if allow_multiple:
+                # If multiple values are allowed, convert to list or append
+                if isinstance(result[tag_name], list):
+                    result[tag_name].append(value) # type: ignore
+                else:
+                    result[tag_name] = [result[tag_name], value] # type: ignore
+            else:
+                # If multiple values are not allowed, raise an error
+                raise ValueError(f"Multiple occurrences of tag '{tag_name}' found, but allow_multiple is False.")
+        else:
+            # If tag name doesn't exist, add it to the result dictionary
+            result[tag_name] = value # type: ignore
+    # Return the result dictionary 
+    return result

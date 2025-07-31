@@ -20,6 +20,7 @@ from compose_rl.algorithms.reward_modeling.functional import (
     JudgementScoreVerifierReward,
     ThinkingFormatVerifierReward,
     JudgmentLogitDiversityReward,
+    JudgmentOmniReward,
 )
 from compose_rl.algorithms.reward_modeling.hf_utils import (
     AutoModelForCausalLMWithRM,
@@ -57,6 +58,7 @@ rewards.register('judgement_format_verifier', func=JudgementFormatVerifierReward
 rewards.register('judgement_score_verifier', func=JudgementScoreVerifierReward)
 rewards.register('thinking_format_verifier', func=ThinkingFormatVerifierReward)
 rewards.register('judgment_logit_diversity', func=JudgmentLogitDiversityReward)
+rewards.register('judgment_omni', func=JudgmentOmniReward)
 
 __all__ = [
     'BaseReward',
@@ -80,4 +82,5 @@ __all__ = [
     'JudgementScoreVerifierReward',
     'ThinkingFormatVerifierReward',
     'JudgmentLogitDiversityReward',
+    'JudgmentOmniReward',
 ]
