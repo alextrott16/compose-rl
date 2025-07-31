@@ -978,8 +978,13 @@ class JudgmentOmniReward(BaseVerifierReward):
     - Passing the formatting rules adds 0.1 to the reward.
     - From there, add to the reward: 0.9 * (1 - the MSE between `sigmoid(score)` and the target label). _
     """
-    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0):
+    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0, max_score_disagreement: float = 1e-4):
         super().__init__(tokenizer=tokenizer, reward=reward)
+        self.max_score_disagreement = max_score_disagreement
+        if self.max_score_disagreement <= 0:
+            raise ValueError(
+                f'max_score_disagreement must be positive, got {self.max_score_disagreement}',
+            )
 
     def needs_extraction(self) -> bool:
         """Indicate that this verifier needs extraction."""
@@ -1014,7 +1019,7 @@ class JudgmentOmniReward(BaseVerifierReward):
             # We could not extract a score from the response. so fail.
             return 0.0
         # Our final formatting check:
-        if np.abs(judgement_obj.score - thinking_score) > 1e-4:
+        if np.abs(judgement_obj.score - thinking_score) > self.max_score_disagreement:
             return 0.0
         
         base_reward = 0.1  # Base reward for passing the formatting rules
