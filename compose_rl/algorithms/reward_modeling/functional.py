@@ -787,20 +787,11 @@ class JudgmentLogitDiversityReward(Reward):
     
     BLOCKING = False
 
-    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0, depth: int=8, gamma: float=1.0, ones_place_weighting: float = 0.0):
+    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0, depth: int=8, gamma: float=1.0, include_ones_place: bool=False):
         super().__init__(tokenizer=tokenizer)
         self.reward = reward
-        self.scorer = DigitEntropyScorer(depth=depth, gamma=gamma)
-        self.ones_place_weighting = ones_place_weighting
-        if not (0 <= self.ones_place_weighting <= 1):
-            raise ValueError(
-                f'Ones place weighting must be in [0, 1], got {self.ones_place_weighting}',
-            )
-        if self.ones_place_weighting > 0:
-            # We need a separate scorer for the ones place
-            self.ones_place_scorer = DigitEntropyScorer(depth=depth, gamma=gamma)
-        else:
-            self.ones_place_scorer = None
+        self.include_ones_place = include_ones_place
+        self.scorer = DigitEntropyScorer(depth=depth+1, gamma=gamma)
     
     def __call__(
         self,
@@ -837,19 +828,11 @@ class JudgmentLogitDiversityReward(Reward):
             # If the answer is NaN, our reward would be NaN (bad), so let's avoid this, shall we?
             # seems smart to avoid infinite values as well
             return 0.0
-        main_reward = self.scorer.add_and_score(float(score))
-        
-        if self.ones_place_scorer is None:
-            return self.reward * main_reward
-        
-        # If we are rewarding the ones place, we'll do some hocus pocus to get this into a number
-        # that works nice for the scorer.
-        # Basically, the below will turn a number like 3.5323 into 0.3, or -8.1234 into -0.8. Nothing too crazy.
-        num = float(str(float(np.abs(score).clip(-9, 9)/10))[:3])
-        ones_place_reward = self.ones_place_scorer.add_and_score(num)
-        
-        net_reward = ((1 - self.ones_place_weighting) * main_reward) + (self.ones_place_weighting * ones_place_reward)
-        return self.reward * net_reward
+        if self.include_ones_place:
+            # Divide by 10 to shift the digits to the right (putting the ones place in the tenths place)
+            return self.reward * self.scorer.add_and_score(float(score) / 10.0)
+        else:
+            return self.reward * self.scorer.add_and_score(float(score))
 
 # Example system prompt for the JudgmentOmniReward class (see class below for details):
 """You will be asked to perform a judgment resulting in a yes/no decision.
