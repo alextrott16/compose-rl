@@ -791,7 +791,7 @@ class JudgmentLogitDiversityReward(Reward):
         super().__init__(tokenizer=tokenizer)
         self.reward = reward
         self.include_ones_place = include_ones_place
-        self.scorer = DigitEntropyScorer(depth=depth+1, gamma=gamma)
+        self.scorer = DigitEntropyScorer(depth=depth+int(self.include_ones_place), gamma=gamma)
     
     def __call__(
         self,
