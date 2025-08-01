@@ -798,7 +798,7 @@ class JudgmentLogitDiversityReward(Reward):
             )
         if self.ones_place_weighting > 0:
             # We need a separate scorer for the ones place
-            self.ones_place_scorer = DigitEntropyScorer(depth=1, gamma=gamma)
+            self.ones_place_scorer = DigitEntropyScorer(depth=depth, gamma=gamma)
         else:
             self.ones_place_scorer = None
     
