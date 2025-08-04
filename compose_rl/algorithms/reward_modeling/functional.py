@@ -920,14 +920,22 @@ def validate_thinking_structure(generation: str, num_pro: int=3, num_con: int=3,
     thinking_content = thinking_dict['thinking']
     if not isinstance(thinking_content, dict):
         return False  # Thinking content should be a dictionary
-    if 'pro' not in thinking_content or 'con' not in thinking_content:
-        return False
-    pro = thinking_content['pro']
-    if isinstance(pro, dict):
-        pro = [pro]
-    con = thinking_content['con']
-    if isinstance(con, dict):
-        con = [con]
+    if num_pro < 1:
+        pro = []
+    else:
+        if 'pro' not in thinking_content:
+            return False
+        pro = thinking_content['pro']
+        if isinstance(pro, dict):
+            pro = [pro]
+    if num_con < 1:
+        con = []
+    else:
+        if 'con' not in thinking_content:
+            return False
+        con = thinking_content['con']
+        if isinstance(con, dict):
+            con = [con]
     if not isinstance(pro, list) or not isinstance(con, list):
         return False  # pro and con should be lists of dictionaries
     if len(pro) < num_pro or len(con) < num_con:
