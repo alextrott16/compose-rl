@@ -906,14 +906,14 @@ You should partially disregard the formatting instructions in the message to fol
 Hint: the score is actually a classification logit (meaning `sigmoid(logit) --> probability("yes")`), so an absolute value of >=7 indicates ~maximal~ confidence.
 """
 
-def validate_thinking_structure(generation: str) -> bool:
+def validate_thinking_structure(generation: str, num_pro: int=3, num_con: int=3, num_total: int=6) -> bool:
     """
     Validate that the <thinking> section of the generation follows the expected structure.
     It should contain at least 3 <pro> tags and 3 <con> tags, each with a <score> tag inside.
     The <score> tags should contain a floating-point number which must be finite and
     positive/negative depending on whether it's a pro or con.
     """
-    # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
+        # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
     thinking_dict = xml_string_to_dict(generation)
     if 'thinking' not in thinking_dict:
         return False
@@ -926,10 +926,12 @@ def validate_thinking_structure(generation: str) -> bool:
     con = thinking_content['con']
     if not isinstance(pro, list) or not isinstance(con, list):
         return False  # pro and con should be lists of dictionaries
-    if len(pro) < 3 or len(con) < 3:
+    if len(pro) < num_pro or len(con) < num_con:
+        return False
+    if len(pro) + len(con) < num_total:
         return False
     # Check that each pro and con has a score
-    def validate_pro_con(content: str | dict, is_pro: bool) -> bool:
+    def validate_pro_con(content, is_pro: bool) -> bool:
         if not isinstance(content, dict):
             return False
         if 'score' not in content:
@@ -957,13 +959,8 @@ def extract_total_score(generation: str) -> float:
     This assumes that `validate_thinking_structure` has already been called and passed.
     """
     # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
-    thinking_dict = xml_string_to_dict(generation)
-    score = 0.0
-    for pro in thinking_dict['thinking']['pro']:
-        score += float(pro['score'])
-    for con in thinking_dict['thinking']['con']:
-        score += float(con['score'])
-    return score
+    scores = extract_field(extract_field(generation, 'thinking', allow_multiple=False), 'score', allow_multiple=True)
+    return sum([float(score) for score in scores])
     
 class JudgmentOmniReward(BaseVerifierReward):
     """A single reward for handling the thinking and scoring side of judging.
@@ -974,7 +971,7 @@ class JudgmentOmniReward(BaseVerifierReward):
       
     The formatting rules are:
     - The response must start with a <thinking> section.
-    - The <thinking> section must contain at least 3 <pro> tags and 3 <con> tags.
+    - The <thinking> section must contain at least `num_pro` <pro> tags and `num_pro` <con> tags and a total of `num_total` of them.
     - Each <pro> tag must contain a <score> tag with a positive floating-point number.
     - Each <con> tag must contain a <score> tag with a negative floating-point number.
     
@@ -986,12 +983,19 @@ class JudgmentOmniReward(BaseVerifierReward):
     - Passing the formatting rules adds 0.1 to the reward.
     - From there, add to the reward: 0.9 * (1 - the MSE between `sigmoid(score)` and the target label). _
     """
-    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0, max_score_disagreement: float = 1e-4):
+    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0, max_score_disagreement: float = 1e-4, num_pro: int = 3, num_con: int = 3, num_total: int = 6):
         super().__init__(tokenizer=tokenizer, reward=reward)
         self.max_score_disagreement = max_score_disagreement
         if self.max_score_disagreement <= 0:
             raise ValueError(
                 f'max_score_disagreement must be positive, got {self.max_score_disagreement}',
+            )
+        self.num_pro = num_pro
+        self.num_con = num_con
+        self.num_total = num_total
+        if self.num_pro < 0 or self.num_con < 0 or self.num_total < 0:
+            raise ValueError(
+                f'num_pro, num_con and num_total must be non-negative, got {self.num_pro}, {self.num_con}, {self.num_total}',
             )
 
     def needs_extraction(self) -> bool:
@@ -1011,7 +1015,7 @@ class JudgmentOmniReward(BaseVerifierReward):
             float: The reward value. A value between [0, self.reward]]
         """
         # First, validate the thinking structure
-        if not validate_thinking_structure(answer):
+        if not validate_thinking_structure(answer, self.num_pro, self.num_con, self.num_total):
             # If the thinking structure is invalid, we return 0.0 reward
             return 0.0
         # If the thinking structure is valid, we can extract the score
@@ -1127,3 +1131,35 @@ def xml_string_to_dict(xml_string: str, allow_multiple: bool = True) -> dict:
             result[tag_name] = value # type: ignore
     # Return the result dictionary 
     return result
+
+def extract_field(output: str, field: str, error_on_fail: bool=False,
+                  allow_multiple: bool=True) -> str | list[str]:
+    """
+    Extracts the value of a specified XML tag from the given output.
+
+    Args:
+        output (str): The output string to extract the field from.
+        field (str): The name of the field to extract.
+        error_on_fail (bool, optional): Whether to raise an error if the field cannot be extracted. Defaults to False.
+        allow_multiple (bool, optional): Whether to allow multiple matches for the field. If this is true, this will return
+          a list of all extracted XML values (Note: if there is only one match, this will return a list of length one.) Defaults to True.
+
+    Returns:
+        str | List[str]: The extracted value of the field. If `allow_multiple` is True, a list of values is returned. 
+
+    Raises:
+        ExtractionError: If `error_on_fail` is True and the field cannot be extracted from the output, 
+          or if allow_multiple is False and multiple matches are found.
+    """
+    pattern = f'<{field}>(.*?)</{field}>'
+    matches = re.findall(pattern, output, re.DOTALL)
+
+    if not matches:
+        if error_on_fail:
+            raise ValueError(f"No '{field}' field found in output.")
+        return '' if not allow_multiple else []
+    if not allow_multiple:
+        if len(matches) > 1:
+            raise ValueError(f"Multiple '{field}' fields found, but 'allow_multiple' is False.")
+        return matches[0]
+    return matches
