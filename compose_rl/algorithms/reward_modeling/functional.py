@@ -913,7 +913,7 @@ def validate_thinking_structure(generation: str, num_pro: int=3, num_con: int=3,
     The <score> tags should contain a floating-point number which must be finite and
     positive/negative depending on whether it's a pro or con.
     """
-        # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
+    # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
     thinking_dict = xml_string_to_dict(generation)
     if 'thinking' not in thinking_dict:
         return False
@@ -953,14 +953,28 @@ def validate_thinking_structure(generation: str, num_pro: int=3, num_con: int=3,
             return False
     return True
 
+# def extract_total_score(generation: str) -> float:
+#     """
+#     Extract the total score from the generation's <thinking> section.
+#     This assumes that `validate_thinking_structure` has already been called and passed.
+#     """
+#     # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
+#     scores = extract_field(extract_field(generation, 'thinking', allow_multiple=False), 'score', allow_multiple=True)
+#     return sum([float(score) for score in scores])
+
 def extract_total_score(generation: str) -> float:
     """
     Extract the total score from the generation's <thinking> section.
     This assumes that `validate_thinking_structure` has already been called and passed.
     """
     # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
-    scores = extract_field(extract_field(generation, 'thinking', allow_multiple=False), 'score', allow_multiple=True)
-    return sum([float(score) for score in scores])
+    thinking_dict = xml_string_to_dict(generation)
+    score = 0.0
+    for pro in thinking_dict['thinking']['pro']:
+        score += float(pro['score'])
+    for con in thinking_dict['thinking']['con']:
+        score += float(con['score'])
+    return score
     
 class JudgmentOmniReward(BaseVerifierReward):
     """A single reward for handling the thinking and scoring side of judging.
