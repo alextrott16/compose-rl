@@ -972,9 +972,15 @@ def extract_total_score(generation: str) -> float:
     # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
     thinking_dict = xml_string_to_dict(generation)
     score = 0.0
-    for pro in thinking_dict['thinking']['pro']:
+    pros = thinking_dict['thinking'].get('pro', [])
+    if isinstance(pros, dict):
+        pros = [pros]
+    cons = thinking_dict['thinking'].get('con', [])
+    if isinstance(cons, dict):
+        cons = [cons]
+    for pro in pros:
         score += float(pro['score'])
-    for con in thinking_dict['thinking']['con']:
+    for con in cons:
         score += float(con['score'])
     return score
     
