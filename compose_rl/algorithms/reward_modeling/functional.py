@@ -955,6 +955,33 @@ def validate_thinking_structure(generation: str, num_pro: int=3, num_con: int=3,
             return False
     return True
 
+def validate_thinking_structure_simple(generation: str, num_total: int=3) -> bool:
+    """Validate adherence to GEN_PGRM_SYSTEM_MESSAGE_SYSTEMATIC_V4's <thinking> structure.
+    
+    Validate that the <thinking> section of the generation follows the expected structure.
+    It should contain at least `num_total` <score> tags.
+    The <score> tags should contain a floating-point number which must be finite.
+    """
+    # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
+    thinking_dict = xml_string_to_dict(generation, allow_multiple=True)
+    if 'thinking' not in thinking_dict:
+        return False
+    scores = extract_field(generation, 'score', error_on_fail=False, allow_multiple=True)
+    if isinstance(scores, str):
+        scores = [scores]
+    if len(scores) < num_total:
+        return False
+    for score in scores:
+        try:
+            score = float(score)
+        except (ValueError, TypeError):
+            return False
+        if score == 0.0:
+            return False
+        if not np.isfinite(score):
+            return False
+    return True
+
 # def extract_total_score(generation: str) -> float:
 #     """
 #     Extract the total score from the generation's <thinking> section.
@@ -969,20 +996,25 @@ def extract_total_score(generation: str) -> float:
     Extract the total score from the generation's <thinking> section.
     This assumes that `validate_thinking_structure` has already been called and passed.
     """
-    # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
-    thinking_dict = xml_string_to_dict(generation)
-    score = 0.0
-    pros = thinking_dict['thinking'].get('pro', [])
-    if isinstance(pros, dict):
-        pros = [pros]
-    cons = thinking_dict['thinking'].get('con', [])
-    if isinstance(cons, dict):
-        cons = [cons]
-    for pro in pros:
-        score += float(pro['score'])
-    for con in cons:
-        score += float(con['score'])
-    return score
+    scores = extract_field(generation, 'score', error_on_fail=False, allow_multiple=True)
+    if isinstance(scores, str):
+        scores = [scores]
+    scores = sum([float(score.strip()) for score in scores])
+    return scores
+    # # A nest dictionary where each key is a tag name and the value is its contents (or another xml dictionary if the tag contains tags)
+    # thinking_dict = xml_string_to_dict(generation)
+    # score = 0.0
+    # pros = thinking_dict['thinking'].get('pro', [])
+    # if isinstance(pros, dict):
+    #     pros = [pros]
+    # cons = thinking_dict['thinking'].get('con', [])
+    # if isinstance(cons, dict):
+    #     cons = [cons]
+    # for pro in pros:
+    #     score += float(pro['score'])
+    # for con in cons:
+    #     score += float(con['score'])
+    # return score
     
 class JudgmentOmniReward(BaseVerifierReward):
     """A single reward for handling the thinking and scoring side of judging.
@@ -1005,7 +1037,7 @@ class JudgmentOmniReward(BaseVerifierReward):
     - Passing the formatting rules adds 0.1 to the reward.
     - From there, add to the reward: 0.9 * (1 - the MSE between `sigmoid(score)` and the target label). _
     """
-    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0, max_score_disagreement: float = 1e-4, num_pro: int = 3, num_con: int = 3, num_total: int = 6):
+    def __init__(self, tokenizer: Tokenizer, reward: float = 1.0, max_score_disagreement: float = 1e-4, num_pro: int = 3, num_con: int = 3, num_total: int = 6, simple_validation: bool=False):
         super().__init__(tokenizer=tokenizer, reward=reward)
         self.max_score_disagreement = max_score_disagreement
         if self.max_score_disagreement <= 0:
@@ -1019,6 +1051,7 @@ class JudgmentOmniReward(BaseVerifierReward):
             raise ValueError(
                 f'num_pro, num_con and num_total must be non-negative, got {self.num_pro}, {self.num_con}, {self.num_total}',
             )
+        self.simple_validation = simple_validation
 
     def needs_extraction(self) -> bool:
         """Indicate that this verifier needs extraction."""
@@ -1037,7 +1070,11 @@ class JudgmentOmniReward(BaseVerifierReward):
             float: The reward value. A value between [0, self.reward]]
         """
         # First, validate the thinking structure
-        if not validate_thinking_structure(answer, self.num_pro, self.num_con, self.num_total):
+        if self.simple_validation:
+            is_valid = validate_thinking_structure_simple(answer, self.num_total)
+        else:
+            is_valid = validate_thinking_structure(answer, self.num_pro, self.num_con, self.num_total)
+        if not is_valid:
             # If the thinking structure is invalid, we return 0.0 reward
             return 0.0
         # If the thinking structure is valid, we can extract the score
